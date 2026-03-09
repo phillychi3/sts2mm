@@ -234,6 +234,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.toggleMod()
 			}
 
+		case "a":
+			if m.state == modsListView && m.panel == panelContent {
+				return m.toggleAllMods()
+			}
+			if m.state == settingsView {
+				return m.cycleAccount()
+			}
+
 		case "u":
 			if m.state == modsListView && m.panel == panelContent {
 				return m.uninstallMod()
@@ -253,11 +261,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			if m.state == settingsView {
 				return m.autoDetectGameDir()
-			}
-
-		case "a":
-			if m.state == settingsView {
-				return m.cycleAccount()
 			}
 
 		case "r":
@@ -486,6 +489,55 @@ func (m Model) toggleMod() (tea.Model, tea.Cmd) {
 
 	if err != nil {
 		m.message = fmt.Sprintf("✗ 操作失敗: %v", err)
+	}
+
+	m = m.loadCurrentView()
+	return m, nil
+}
+
+func (m Model) toggleAllMods() (tea.Model, tea.Cmd) {
+	if len(m.modsList) == 0 {
+		return m, nil
+	}
+	gameDir := m.cfg.GetGameDir()
+	if gameDir == "" {
+		m.message = "✗ 請先設定遊戲目錄"
+		return m, nil
+	}
+
+	allEnabled := true
+	for _, mod := range m.modsList {
+		if !mod.Enabled {
+			allEnabled = false
+			break
+		}
+	}
+
+	var errCount int
+	if allEnabled {
+		for _, mod := range m.modsList {
+			if err := DisableMod(mod.Name, gameDir); err != nil {
+				errCount++
+			}
+		}
+		if errCount == 0 {
+			m.message = "○ 已停用全部模組"
+		} else {
+			m.message = fmt.Sprintf("✗ 部分模組停用失敗（%d 個）", errCount)
+		}
+	} else {
+		for _, mod := range m.modsList {
+			if !mod.Enabled {
+				if err := EnableMod(mod.Name, gameDir); err != nil {
+					errCount++
+				}
+			}
+		}
+		if errCount == 0 {
+			m.message = "● 已啟用全部模組"
+		} else {
+			m.message = fmt.Sprintf("✗ 部分模組啟用失敗（%d 個）", errCount)
+		}
 	}
 
 	m = m.loadCurrentView()
@@ -847,7 +899,7 @@ func (m Model) renderHelp() string {
 	var keys string
 	switch m.state {
 	case modsListView:
-		keys = "[I]匯入  [Space]啟用/停用  [U]卸載  [Tab/←→]切換面板  [Q]離開"
+		keys = "[I]匯入  [Space]啟用/停用  [A]全部開關  [U]卸載  [Tab/←→]切換面板  [Q]離開"
 	case saveManageView:
 		keys = "[B]備份選中巢位  [Enter]還原備份  [Tab/←→]切換欄位  [Q]離開"
 	case settingsView:
