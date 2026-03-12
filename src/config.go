@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const (
@@ -11,6 +12,7 @@ const (
 	STS2AppID   = "2868840"
 	STS2DirName = "Slay the Spire 2"
 	STS2Exe     = "SlayTheSpire2.exe"
+	STS2APP     = "SlayTheSpire2.app"
 	ConfigFile  = "modmanager.json"
 	MaxLogs     = 3
 )
@@ -38,11 +40,17 @@ func init() {
 	ModsSource = filepath.Join(ScriptDir, "Mods")
 	BackupsDir = filepath.Join(ScriptDir, "SaveBackups")
 
-	appData := os.Getenv("APPDATA")
-	if appData == "" {
-		appData = os.Getenv("HOME")
+	switch runtime.GOOS {
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		SaveRoot = filepath.Join(appData, "SlayTheSpire2", "steam")
+	case "darwin":
+		home := os.Getenv("HOME")
+		SaveRoot = filepath.Join(home, "Library", "Application Support", "SlayTheSpire2", "steam")
+	default:
+		home := os.Getenv("HOME")
+		SaveRoot = filepath.Join(home, "SlayTheSpire2", "steam")
 	}
-	SaveRoot = filepath.Join(appData, "SlayTheSpire2", "steam")
 	LogDir = filepath.Join(ScriptDir, "logs")
 }
 

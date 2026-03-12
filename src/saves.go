@@ -78,7 +78,7 @@ func BackupSaves(label, steamID, profile string) error {
 	src := filepath.Join(accountDir, filepath.FromSlash(profile))
 
 	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return fmt.Errorf("巢位不存在: %s", profile)
+		return fmt.Errorf("槽位不存在: %s", profile)
 	}
 
 	if err := os.MkdirAll(BackupsDir, 0755); err != nil {

@@ -10,10 +10,34 @@ import (
 )
 
 func FindGameDir() string {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		return findGameDirWindows()
+	case "darwin":
+		return findGameDirDarwin()
+	default:
+		return findGameDirLinux()
 	}
-	return findGameDirLinux()
+}
+
+func findGameDirDarwin() string {
+	home := os.Getenv("HOME")
+	steamPath := filepath.Join(home, "Library", "Application Support", "Steam")
+
+	candidate := filepath.Join(steamPath, "steamapps", "common", STS2DirName)
+	if isValidGameDir(candidate) {
+		return candidate
+	}
+
+	vdf := filepath.Join(steamPath, "steamapps", "libraryfolders.vdf")
+	for _, libPath := range parseLibraryFolders(vdf) {
+		candidate := filepath.Join(libPath, "steamapps", "common", STS2DirName)
+		if isValidGameDir(candidate) {
+			return candidate
+		}
+	}
+
+	return ""
 }
 
 func findGameDirLinux() string {
@@ -115,7 +139,10 @@ func bruteForceSearch() string {
 }
 
 func isValidGameDir(path string) bool {
-	exePath := filepath.Join(path, STS2Exe)
-	_, err := os.Stat(exePath)
+	exe := STS2Exe
+	if runtime.GOOS == "darwin" {
+		exe = STS2APP
+	}
+	_, err := os.Stat(filepath.Join(path, exe))
 	return err == nil
 }
