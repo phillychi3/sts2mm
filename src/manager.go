@@ -56,7 +56,7 @@ func GetAvailableMods() ([]ModInfo, error) {
 func GetInstalledMods(gameDir string) ([]ModInfo, error) {
 	var mods []ModInfo
 
-	modsDir := filepath.Join(gameDir, "mods")
+	modsDir := ModsDir(gameDir)
 	if _, err := os.Stat(modsDir); err == nil {
 		entries, err := os.ReadDir(modsDir)
 		if err != nil {
@@ -97,15 +97,15 @@ func GetInstalledMods(gameDir string) ([]ModInfo, error) {
 
 func EnableMod(modName, gameDir string) error {
 	src := filepath.Join(DisabledModsDir(gameDir), modName)
-	dst := filepath.Join(gameDir, "mods", modName)
-	if err := os.MkdirAll(filepath.Join(gameDir, "mods"), 0755); err != nil {
+	dst := filepath.Join(ModsDir(gameDir), modName)
+	if err := os.MkdirAll(ModsDir(gameDir), 0755); err != nil {
 		return err
 	}
 	return os.Rename(src, dst)
 }
 
 func DisableMod(modName, gameDir string) error {
-	src := filepath.Join(gameDir, "mods", modName)
+	src := filepath.Join(ModsDir(gameDir), modName)
 	dst := filepath.Join(DisabledModsDir(gameDir), modName)
 	if err := os.MkdirAll(DisabledModsDir(gameDir), 0755); err != nil {
 		return err
@@ -284,7 +284,7 @@ func findDLLName(modPath string) string {
 }
 
 func Install(mod ModInfo, gameDir string) error {
-	destDir := filepath.Join(gameDir, "mods", mod.InstallName)
+	destDir := filepath.Join(ModsDir(gameDir), mod.InstallName)
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("創建目錄失敗: %w", err)
@@ -312,7 +312,7 @@ func Install(mod ModInfo, gameDir string) error {
 }
 
 func Uninstall(modName, gameDir string) error {
-	modPath := filepath.Join(gameDir, "mods", modName)
+	modPath := filepath.Join(ModsDir(gameDir), modName)
 	return os.RemoveAll(modPath)
 }
 

@@ -54,6 +54,13 @@ func init() {
 	LogDir = filepath.Join(ScriptDir, "logs")
 }
 
+func ModsDir(gameDir string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(gameDir, STS2APP, "Contents", "MacOS", "mods")
+	}
+	return filepath.Join(gameDir, "mods")
+}
+
 func DisabledModsDir(gameDir string) string {
 	return filepath.Join(gameDir, "mods_disabled")
 }
@@ -85,7 +92,11 @@ func (c *Config) Save() error {
 
 func (c *Config) GetGameDir() string {
 	if c.GameDir != "" {
-		exePath := filepath.Join(c.GameDir, STS2Exe)
+		exe := STS2Exe
+		if runtime.GOOS == "darwin" {
+			exe = STS2APP
+		}
+		exePath := filepath.Join(c.GameDir, exe)
 		if _, err := os.Stat(exePath); err == nil {
 			return c.GameDir
 		}
