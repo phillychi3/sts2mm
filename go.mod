@@ -1,4 +1,4 @@
-module phillychi3/sts2mm
+module github.com/phillychi3/sts2mm
 
 go 1.26.1
 

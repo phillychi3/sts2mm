@@ -3,7 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
-	sts2mm "phillychi3/sts2mm/src"
+
+	sts2mm "github.com/phillychi3/sts2mm/src"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
