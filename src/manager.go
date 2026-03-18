@@ -142,6 +142,10 @@ func importFromDir(srcDir string) (ModInfo, error) {
 		return ModInfo{}, err
 	}
 
+	if _, err := os.Stat(destDir); err == nil {
+		return ModInfo{}, fmt.Errorf("模組「%s」已存在，請先卸載再重新匯入", dirName)
+	}
+
 	if err := copyDirContents(srcDir, destDir); err != nil {
 		return ModInfo{}, fmt.Errorf("複製資料夾失敗: %w", err)
 	}
@@ -162,6 +166,10 @@ func importFromZip(zipPath string) (ModInfo, error) {
 
 	zipName := strings.TrimSuffix(filepath.Base(zipPath), filepath.Ext(zipPath))
 	destDir := filepath.Join(ModsSource, zipName)
+
+	if _, err := os.Stat(destDir); err == nil {
+		return ModInfo{}, fmt.Errorf("模組「%s」已存在，請先卸載再重新匯入", zipName)
+	}
 
 	for _, f := range r.File {
 

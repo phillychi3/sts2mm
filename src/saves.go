@@ -175,11 +175,27 @@ func RestoreBackup(id, steamID, profile string) error {
 		return fmt.Errorf("建立目錄失敗: %w", err)
 	}
 
-	if err := os.RemoveAll(dst); err != nil {
-		return fmt.Errorf("清除 %s 失敗: %w", profile, err)
+	tmp := dst + ".bak"
+	hasTmp := false
+	if _, err := os.Stat(dst); err == nil {
+		if err := os.Rename(dst, tmp); err != nil {
+			return fmt.Errorf("備份現有存檔失敗: %w", err)
+		}
+		hasTmp = true
 	}
 
-	return copyDir(srcDir, dst)
+	if err := copyDir(srcDir, dst); err != nil {
+		if hasTmp {
+			os.RemoveAll(dst)
+			os.Rename(tmp, dst)
+		}
+		return fmt.Errorf("還原失敗: %w", err)
+	}
+
+	if hasTmp {
+		os.RemoveAll(tmp)
+	}
+	return nil
 }
 
 func HasAnyBackup() bool {

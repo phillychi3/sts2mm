@@ -5,21 +5,32 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const (
-	VERSION     = "0.0.1"
+	VERSION     = "0.0.2"
 	STS2AppID   = "2868840"
 	STS2DirName = "Slay the Spire 2"
 	STS2Exe     = "SlayTheSpire2.exe"
 	STS2APP     = "SlayTheSpire2.app"
 	ConfigFile  = "modmanager.json"
 	MaxLogs     = 3
+	PackagesDir = "Packages"
 )
 
+type ModPackage struct {
+	Name        string    `json:"name"`
+	DisplayName string    `json:"displayName"`
+	Mods        []string  `json:"mods"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 type Config struct {
-	GameDir string `json:"gameDir"`
-	SteamID string `json:"steamId"`
+	GameDir       string       `json:"gameDir"`
+	SteamID       string       `json:"steamId"`
+	ActivePackage string       `json:"activePackage"`
+	Packages      []ModPackage `json:"packages"`
 }
 
 var (
@@ -76,6 +87,20 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return &Config{}, nil
+	}
+
+	if cfg.ActivePackage != "" {
+		found := false
+		for _, p := range cfg.Packages {
+			if p.Name == cfg.ActivePackage {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.ActivePackage = ""
+			cfg.Save()
+		}
 	}
 
 	return &cfg, nil

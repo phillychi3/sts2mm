@@ -15,9 +15,18 @@ type sessionState int
 const (
 	modsListView sessionState = iota
 	saveManageView
+	packageListView
 	settingsView
 	importView
 	confirmInheritSaveView
+
+	packageImportView
+	packageNewView
+	packageConfirmDeleteView
+	packageConfirmRemoveModView
+	packageConflictView
+	packageAddModView
+	confirmUninstallView
 )
 
 const (
@@ -95,6 +104,14 @@ type Model struct {
 	width             int
 	height            int
 	quitting          bool
+
+	pkgListIdx        int
+	pkgDetailMod      int    // selected mod index in detail pane
+	pkgSection        int    // 0=list pane, 1=detail pane
+	pkgPendingName    string // package being deleted/acted on
+	pkgPendingMod     string // mod being removed
+	pkgImportResult   *ImportResult
+	pkgConflictChoice int // 0=overwrite,1=skip,2=cancel
 }
 
 type sidebarItem struct {
@@ -105,6 +122,7 @@ type sidebarItem struct {
 var sidebarItems = []sidebarItem{
 	{"模組列表", modsListView},
 	{"存檔管理", saveManageView},
+	{"模組包", packageListView},
 	{"設  定", settingsView},
 }
 
@@ -162,6 +180,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == confirmInheritSaveView {
 			return m.updateConfirmInheritSave(msg)
 		}
+		if m.state == packageImportView || m.state == packageNewView {
+			return m.updatePackageTextInput(msg)
+		}
+		if m.state == packageConfirmDeleteView {
+			return m.updatePackageConfirmDelete(msg)
+		}
+		if m.state == packageConfirmRemoveModView {
+			return m.updatePackageConfirmRemoveMod(msg)
+		}
+		if m.state == packageConflictView {
+			return m.updatePackageConflict(msg)
+		}
+		if m.state == packageAddModView {
+			return m.updatePackageAddMod(msg)
+		}
+		if m.state == confirmUninstallView {
+			return m.updateConfirmUninstall(msg)
+		}
 
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -175,8 +211,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modsTable.Focus()
 				}
 			} else if m.state == saveManageView {
-
 				m.savesSection = 1 - m.savesSection
+			} else if m.state == packageListView {
+				return m.handlePackageListKeys("tab")
 			} else {
 				m.panel = panelSidebar
 				m.modsTable.Blur()
@@ -184,7 +221,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "left", "h":
-			if m.panel == panelContent && m.state == saveManageView && m.savesSection == 1 {
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("left")
+			} else if m.panel == panelContent && m.state == saveManageView && m.savesSection == 1 {
 				m.savesSection = 0
 			} else {
 				m.panel = panelSidebar
@@ -202,6 +241,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.state == modsListView {
 				m.modsTable, _ = m.modsTable.Update(msg)
+			} else if m.state == packageListView {
+				return m.handlePackageListKeys("up")
 			} else {
 				m = m.moveContentUp()
 			}
@@ -217,6 +258,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.state == modsListView {
 				m.modsTable, _ = m.modsTable.Update(msg)
+			} else if m.state == packageListView {
+				return m.handlePackageListKeys("down")
 			} else {
 				m = m.moveContentDown()
 			}
@@ -226,6 +269,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.panel == panelSidebar {
 				m.panel = panelContent
 				return m, nil
+			}
+			if m.state == packageListView {
+				return m.handlePackageListKeys("enter")
 			}
 			return m.handleEnterContent()
 
@@ -262,8 +308,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == settingsView {
 				return m.autoDetectGameDir()
 			}
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("delete")
+			}
+
+		case "n":
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("n")
+			}
+
+		case "e":
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("e")
+			}
+
+		case "x":
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("x")
+			}
+
+		case "p":
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("p")
+			}
+			if m.state == modsListView && m.panel == panelContent {
+				if len(m.cfg.Packages) == 0 {
+					m.message = "✗ 請先建立模組包"
+					return m, nil
+				}
+				pkgs := m.addablePackages()
+				if len(pkgs) == 0 {
+					m.message = "✓ 已加入所有模組包"
+					return m, nil
+				}
+				m.pkgListIdx = 0
+				m.state = packageAddModView
+				return m, nil
+			}
 
 		case "r":
+			if m.state == packageListView && m.panel == panelContent {
+				return m.handlePackageListKeys("r")
+			}
 			m = m.loadCurrentView()
 			return m, nil
 		}
@@ -548,18 +634,37 @@ func (m Model) uninstallMod() (tea.Model, tea.Cmd) {
 	if len(m.modsList) == 0 {
 		return m, nil
 	}
-	mod := m.modsList[m.modsTable.Cursor()]
 	gameDir := m.cfg.GetGameDir()
 	if gameDir == "" {
 		m.message = "✗ 請先設定遊戲目錄"
 		return m, nil
 	}
 
-	_ = Uninstall(mod.Name, gameDir)
-	_ = UninstallDisabled(mod.Name, gameDir)
+	m.pkgPendingMod = m.modsList[m.modsTable.Cursor()].Name
+	m.state = confirmUninstallView
+	return m, nil
+}
 
-	m.message = fmt.Sprintf("🗑 %s 已卸載", mod.DisplayName)
-	m = m.loadCurrentView()
+func (m Model) updateConfirmUninstall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "y", "Y", "enter":
+		gameDir := m.cfg.GetGameDir()
+		modName := m.pkgPendingMod
+		_ = Uninstall(modName, gameDir)
+		_ = UninstallDisabled(modName, gameDir)
+		m.message = fmt.Sprintf("🗑 %s 已卸載", modName)
+		m.pkgPendingMod = ""
+		m.state = modsListView
+		m = m.loadCurrentView()
+		return m, nil
+	case "n", "N", "esc":
+		m.pkgPendingMod = ""
+		m.state = modsListView
+		return m, nil
+	}
 	return m, nil
 }
 
@@ -659,9 +764,29 @@ func (m Model) View() string {
 	if m.state == importView {
 		return m.renderImportView(header)
 	}
-
 	if m.state == confirmInheritSaveView {
 		return m.renderConfirmInheritSave(header)
+	}
+	if m.state == packageImportView {
+		return m.renderPackageImportView(header)
+	}
+	if m.state == packageNewView {
+		return m.renderPackageNewView(header)
+	}
+	if m.state == packageConfirmDeleteView {
+		return m.renderPackageConfirmDelete(header)
+	}
+	if m.state == packageConfirmRemoveModView {
+		return m.renderPackageConfirmRemoveMod(header)
+	}
+	if m.state == packageConflictView {
+		return m.renderPackageConflictView(header)
+	}
+	if m.state == packageAddModView {
+		return m.renderPackageAddModView(header)
+	}
+	if m.state == confirmUninstallView {
+		return m.renderConfirmUninstall(header)
 	}
 
 	sidebar := m.renderSidebar()
@@ -766,6 +891,8 @@ func (m Model) renderContent(width, height int) string {
 		return m.renderModsList(width, height)
 	case saveManageView:
 		return m.renderSaveManage(width, height)
+	case packageListView:
+		return m.renderPackageList(width, height)
 	case settingsView:
 		return m.renderSettings(width)
 	}
@@ -899,9 +1026,11 @@ func (m Model) renderHelp() string {
 	var keys string
 	switch m.state {
 	case modsListView:
-		keys = "[I]匯入  [Space]啟用/停用  [A]全部開關  [U]卸載  [Tab/←→]切換面板  [Q]離開"
+		keys = "[I]匯入  [Space]啟用/停用  [A]全部開關  [P]加入模組包  [U]卸載  [Tab/←→]切換面板  [Q]離開"
 	case saveManageView:
 		keys = "[B]備份選中巢位  [Enter]還原備份  [Tab/←→]切換欄位  [Q]離開"
+	case packageListView:
+		keys = "[Enter]切換/重套  [X]停用  [N]新建  [P]匯入  [E]導出  [R]移出模組  [D]刪除包  [Tab/←→]切換欄位  [Q]離開"
 	case settingsView:
 		keys = "[D]自動偵測遊戲目錄  [A]切換帳號  [Tab/←→]切換面板  [Q]離開"
 	}
