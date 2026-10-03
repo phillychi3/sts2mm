@@ -198,6 +198,23 @@ func RestoreBackup(id, steamID, profile string) error {
 	return nil
 }
 
+func SlotLastModified(steamID string) []time.Time {
+	times := make([]time.Time, len(AllSaveSlots))
+	if steamID == "" {
+		return times
+	}
+	accountDir := GetAccountSaveDir(steamID)
+	for i, slot := range AllSaveSlots {
+		filepath.Walk(filepath.Join(accountDir, filepath.FromSlash(slot)), func(_ string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && info.ModTime().After(times[i]) {
+				times[i] = info.ModTime()
+			}
+			return nil
+		})
+	}
+	return times
+}
+
 func HasAnyBackup() bool {
 	backups, err := ListBackups()
 	return err == nil && len(backups) > 0

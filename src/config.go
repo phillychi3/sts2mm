@@ -20,10 +20,11 @@ const (
 )
 
 type ModPackage struct {
-	Name        string    `json:"name"`
-	DisplayName string    `json:"displayName"`
-	Mods        []string  `json:"mods"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Name        string            `json:"name"`
+	DisplayName string            `json:"displayName"`
+	Mods        []string          `json:"mods"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	Workshop    map[string]string `json:"workshop,omitempty"`
 }
 
 type Config struct {
@@ -31,6 +32,8 @@ type Config struct {
 	SteamID       string       `json:"steamId"`
 	ActivePackage string       `json:"activePackage"`
 	Packages      []ModPackage `json:"packages"`
+	SteamCMDPath  string       `json:"steamcmdPath,omitempty"`
+	SteamCMDUser  string       `json:"steamcmdUser,omitempty"`
 }
 
 var (

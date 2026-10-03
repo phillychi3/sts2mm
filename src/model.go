@@ -3,6 +3,7 @@ package sts2mm
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -27,6 +28,12 @@ const (
 	packageConflictView
 	packageAddModView
 	confirmUninstallView
+
+	workshopView
+	workshopInputView
+	workshopMethodView
+	workshopUserView
+	workshopProgressView
 )
 
 const (
@@ -97,6 +104,7 @@ type Model struct {
 	saveBackupIdx  int          // right pane: selected backup index
 	savesSection   int          // 0=profile pane, 1=backup pane
 	savesList      []BackupInfo // backups for currently selected profile
+	saveSlotTimes  []time.Time  // 各巢位最後更新時間，對應 AllSaveSlots
 
 	textInput         textinput.Model
 	pendingImportPath string
@@ -112,6 +120,20 @@ type Model struct {
 	pkgPendingMod     string // mod being removed
 	pkgImportResult   *ImportResult
 	pkgConflictChoice int // 0=overwrite,1=skip,2=cancel
+
+	wsItems          []WorkshopItem // 本機已下載的工作坊模組
+	wsPending        []WorkshopItem // 待同步項目
+	wsMethodIdx      int
+	wsProgress       []WorkshopProgress
+	wsResults        []WorkshopSyncResult
+	wsRunning        bool
+	wsBusy           bool
+	wsCh             chan tea.Msg
+	wsLastExport     *WorkshopList
+	wsLastExportPath string
+	wsSourceName     string // 同步後建立的模組包名稱
+	wsPackageSaved   bool
+	wsMergePackage   bool // 下載結果併入既有模組包（匯入模組包時）
 }
 
 type sidebarItem struct {
@@ -123,6 +145,7 @@ var sidebarItems = []sidebarItem{
 	{"模組列表", modsListView},
 	{"存檔管理", saveManageView},
 	{"模組包", packageListView},
+	{"工作坊", workshopView},
 	{"設  定", settingsView},
 }
 
@@ -159,6 +182,9 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case workshopExportMsg, workshopTitlesMsg, workshopProgressMsg, workshopDoneMsg, steamcmdExitMsg:
+		return m.updateWorkshopMsg(msg)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -197,6 +223,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.state == confirmUninstallView {
 			return m.updateConfirmUninstall(msg)
+		}
+		if m.state == workshopInputView || m.state == workshopUserView {
+			return m.updateWorkshopTextInput(msg)
+		}
+		if m.state == workshopMethodView {
+			return m.updateWorkshopMethod(msg)
+		}
+		if m.state == workshopProgressView {
+			return m.updateWorkshopProgress(msg)
 		}
 
 		switch msg.String() {
@@ -320,6 +355,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e":
 			if m.state == packageListView && m.panel == panelContent {
 				return m.handlePackageListKeys("e")
+			}
+			if m.state == workshopView {
+				return m.doWorkshopExport()
+			}
+
+		case "s":
+			if m.state == workshopView {
+				return m.startWorkshopInput()
 			}
 
 		case "x":
@@ -481,26 +524,42 @@ func (m Model) handleEnterContent() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) modsTableColumns(width int) []table.Column {
-	nameW := width - 40 // = inner(width-2) - fixed(36) - nameColPadding(2)
+	nameW := width - 48 // = inner(width-2) - fixed(44) - nameColPadding(2)
 	if nameW < 10 {
 		nameW = 10
 	}
 	return []table.Column{
 		{Title: "模組名稱", Width: nameW},
+		{Title: "來源", Width: 6},
 		{Title: "版本", Width: 8},
 		{Title: "作者", Width: 14},
 		{Title: "狀態", Width: 8},
 	}
 }
 
+func sourceLabel(source string) string {
+	switch source {
+	case SourceWorkshop:
+		return "工作坊"
+	case SourceLegacyDisabled:
+		return "舊停用"
+	}
+	return "本地"
+}
+
 func (m Model) buildModsTable(mods []ModInfo) table.Model {
 	rows := make([]table.Row, len(mods))
+	dups := DuplicateMods(mods)
 	for i, mod := range mods {
 		badge := "● 啟用"
 		if !mod.Enabled {
 			badge = "○ 停用"
 		}
-		rows[i] = table.Row{mod.DisplayName, mod.Version, mod.Author, badge}
+		name := mod.DisplayName
+		if mod.Source != SourceLegacyDisabled && dups[strings.ToLower(mod.GameID())] {
+			name += " ⚠重複"
+		}
+		rows[i] = table.Row{name, sourceLabel(mod.Source), mod.Version, mod.Author, badge}
 	}
 	contentHeight := m.height - 8
 	if contentHeight < 5 {
@@ -531,7 +590,7 @@ func (m Model) loadCurrentView() Model {
 	case modsListView:
 		gameDir := m.cfg.GetGameDir()
 		if gameDir != "" {
-			mods, _ := GetInstalledMods(gameDir)
+			mods, _ := GetInstalledMods(gameDir, m.cfg.SteamID)
 			m.modsList = mods
 			cursor := m.modsTable.Cursor()
 			m.modsTable = m.buildModsTable(mods)
@@ -539,7 +598,13 @@ func (m Model) loadCurrentView() Model {
 				m.modsTable.SetCursor(cursor)
 			}
 		}
+	case workshopView:
+		m.wsItems = nil
+		if gameDir := m.cfg.GetGameDir(); gameDir != "" {
+			m.wsItems, _ = ScanWorkshopItems(gameDir)
+		}
 	case saveManageView:
+		m.saveSlotTimes = SlotLastModified(m.cfg.SteamID)
 		profile := AllSaveSlots[m.saveProfileIdx]
 		m.savesList, _ = ListBackupsByProfile(profile)
 		if m.saveBackupIdx >= len(m.savesList) {
@@ -560,21 +625,12 @@ func (m Model) toggleMod() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	var err error
-	if mod.Enabled {
-		err = DisableMod(mod.Name, gameDir)
-		if err == nil {
-			m.message = fmt.Sprintf("○ %s 已停用", mod.DisplayName)
-		}
-	} else {
-		err = EnableMod(mod.Name, gameDir)
-		if err == nil {
-			m.message = fmt.Sprintf("● %s 已啟用", mod.DisplayName)
-		}
-	}
-
-	if err != nil {
+	if err := SetModStates(gameDir, m.cfg.SteamID, []ModState{{mod, !mod.Enabled}}); err != nil {
 		m.message = fmt.Sprintf("✗ 操作失敗: %v", err)
+	} else if mod.Enabled {
+		m.message = fmt.Sprintf("○ %s 已停用", mod.DisplayName)
+	} else {
+		m.message = fmt.Sprintf("● %s 已啟用", mod.DisplayName)
 	}
 
 	m = m.loadCurrentView()
@@ -591,39 +647,27 @@ func (m Model) toggleAllMods() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// mods_disabled 中的舊模組不參與全部開關，避免與同名模組衝突
 	allEnabled := true
 	for _, mod := range m.modsList {
-		if !mod.Enabled {
+		if mod.Source != SourceLegacyDisabled && !mod.Enabled {
 			allEnabled = false
 			break
 		}
 	}
 
-	var errCount int
-	if allEnabled {
-		for _, mod := range m.modsList {
-			if err := DisableMod(mod.Name, gameDir); err != nil {
-				errCount++
-			}
+	var states []ModState
+	for _, mod := range m.modsList {
+		if mod.Source != SourceLegacyDisabled {
+			states = append(states, ModState{mod, !allEnabled})
 		}
-		if errCount == 0 {
-			m.message = "○ 已停用全部模組"
-		} else {
-			m.message = fmt.Sprintf("✗ 部分模組停用失敗（%d 個）", errCount)
-		}
+	}
+	if err := SetModStates(gameDir, m.cfg.SteamID, states); err != nil {
+		m.message = fmt.Sprintf("✗ 操作失敗: %v", err)
+	} else if allEnabled {
+		m.message = "○ 已停用全部模組"
 	} else {
-		for _, mod := range m.modsList {
-			if !mod.Enabled {
-				if err := EnableMod(mod.Name, gameDir); err != nil {
-					errCount++
-				}
-			}
-		}
-		if errCount == 0 {
-			m.message = "● 已啟用全部模組"
-		} else {
-			m.message = fmt.Sprintf("✗ 部分模組啟用失敗（%d 個）", errCount)
-		}
+		m.message = "● 已啟用全部模組"
 	}
 
 	m = m.loadCurrentView()
@@ -640,7 +684,12 @@ func (m Model) uninstallMod() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.pkgPendingMod = m.modsList[m.modsTable.Cursor()].Name
+	mod := m.modsList[m.modsTable.Cursor()]
+	if mod.Source == SourceWorkshop {
+		m.message = "✗ 工作坊模組請在 Steam 取消訂閱"
+		return m, nil
+	}
+	m.pkgPendingMod = mod.Name
 	m.state = confirmUninstallView
 	return m, nil
 }
@@ -651,11 +700,12 @@ func (m Model) updateConfirmUninstall(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "y", "Y", "enter":
-		gameDir := m.cfg.GetGameDir()
-		modName := m.pkgPendingMod
-		_ = Uninstall(modName, gameDir)
-		_ = UninstallDisabled(modName, gameDir)
-		m.message = fmt.Sprintf("🗑 %s 已卸載", modName)
+		mod := m.modsList[m.modsTable.Cursor()]
+		if err := Uninstall(mod); err != nil {
+			m.message = fmt.Sprintf("✗ 卸載失敗: %v", err)
+		} else {
+			m.message = fmt.Sprintf("🗑 %s 已卸載", mod.DisplayName)
+		}
 		m.pkgPendingMod = ""
 		m.state = modsListView
 		m = m.loadCurrentView()
@@ -690,6 +740,7 @@ func (m Model) restoreBackup() (tea.Model, tea.Cmd) {
 		m.message = fmt.Sprintf("✗ 還原失敗: %v", err)
 	} else {
 		m.message = fmt.Sprintf("✓ 已還原 %s", profile)
+		m.saveSlotTimes = SlotLastModified(m.cfg.SteamID)
 	}
 	return m, nil
 }
@@ -787,6 +838,15 @@ func (m Model) View() string {
 	}
 	if m.state == confirmUninstallView {
 		return m.renderConfirmUninstall(header)
+	}
+	if m.state == workshopInputView || m.state == workshopUserView {
+		return m.renderWorkshopInputView(header)
+	}
+	if m.state == workshopMethodView {
+		return m.renderWorkshopMethodView(header)
+	}
+	if m.state == workshopProgressView {
+		return m.renderWorkshopProgressView(header)
 	}
 
 	sidebar := m.renderSidebar()
@@ -893,6 +953,8 @@ func (m Model) renderContent(width, height int) string {
 		return m.renderSaveManage(width, height)
 	case packageListView:
 		return m.renderPackageList(width, height)
+	case workshopView:
+		return m.renderWorkshop(width)
 	case settingsView:
 		return m.renderSettings(width)
 	}
@@ -915,12 +977,16 @@ func (m Model) renderSaveManage(width, height int) string {
 	muted := lipgloss.NewStyle().Foreground(colorMuted)
 	sep := lipgloss.NewStyle().Foreground(colorBorder).Render("│")
 
-	leftW := 22
+	leftW := 36
 	var leftSB strings.Builder
-	leftSB.WriteString(muted.Render("巢位") + "\n")
+	leftSB.WriteString(muted.Render("巢位              最後更新") + "\n")
 	leftSB.WriteString("\n")
 	for i, slot := range AllSaveSlots {
-		line := fmt.Sprintf(" %-*s", leftW-1, slot)
+		updated := "—"
+		if i < len(m.saveSlotTimes) && !m.saveSlotTimes[i].IsZero() {
+			updated = m.saveSlotTimes[i].Format("2006-01-02 15:04")
+		}
+		line := fmt.Sprintf(" %-16s %s", slot, updated)
 		if i == m.saveProfileIdx {
 			leftSB.WriteString(selectedItemStyle.Render("▶" + line[1:]))
 		} else {
@@ -1031,6 +1097,8 @@ func (m Model) renderHelp() string {
 		keys = "[B]備份選中巢位  [Enter]還原備份  [Tab/←→]切換欄位  [Q]離開"
 	case packageListView:
 		keys = "[Enter]切換/重套  [X]停用  [N]新建  [P]匯入  [E]導出  [R]移出模組  [D]刪除包  [Tab/←→]切換欄位  [Q]離開"
+	case workshopView:
+		keys = "[E]匯出清單  [S]從清單同步  [R]重新整理  [Tab/←→]切換面板  [Q]離開"
 	case settingsView:
 		keys = "[D]自動偵測遊戲目錄  [A]切換帳號  [Tab/←→]切換面板  [Q]離開"
 	}
@@ -1046,4 +1114,21 @@ func truncate(s string, max int) string {
 		return string(runes[:max])
 	}
 	return string(runes[:max-1]) + "…"
+}
+
+func truncateWidth(s string, max int) string {
+	if lipgloss.Width(s) <= max {
+		return s
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > max-1 {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String() + "…"
 }

@@ -321,9 +321,9 @@ func (m Model) doImportPackage(path string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	m.pkgImportResult = result
+	m.pendingImportPath = path
 	if len(result.Conflicts) > 0 {
-		m.pkgImportResult = result
-		m.pendingImportPath = path
 		m.state = packageConflictView
 		return m, nil
 	}
@@ -332,19 +332,23 @@ func (m Model) doImportPackage(path string) (tea.Model, tea.Cmd) {
 
 func (m Model) doImportWithChoice(overwrite bool) (tea.Model, tea.Cmd) {
 	gameDir := m.cfg.GetGameDir()
-	err := ImportPackage(m.pendingImportPath, m.cfg, gameDir, overwrite)
-	if err != nil {
-		m.message = fmt.Sprintf("✗ %v", err)
-	} else {
-		name := ""
-		if m.pkgImportResult != nil {
-			name = m.pkgImportResult.Package.DisplayName
-		}
-		m.message = fmt.Sprintf("✓ 已匯入模組包「%s」", name)
+	downloads, err := ImportPackage(m.pendingImportPath, m.cfg, gameDir, overwrite)
+	var pkg ModPackage
+	if m.pkgImportResult != nil {
+		pkg = m.pkgImportResult.Package
 	}
 	m.pkgImportResult = nil
 	m.pendingImportPath = ""
 	m.state = packageListView
+	if err != nil {
+		m.message = fmt.Sprintf("✗ %v", err)
+		return m, nil
+	}
+	m.message = fmt.Sprintf("✓ 已匯入模組包「%s」", pkg.DisplayName)
+	if len(downloads) > 0 {
+		m.message += fmt.Sprintf("，需從工作坊下載 %d 個項目", len(downloads))
+		return m.beginWorkshopSync(downloads, pkg.Name, true)
+	}
 	return m, nil
 }
 
@@ -385,12 +389,15 @@ func (m Model) renderPackageList(width, _ int) string {
 
 	var leftSB strings.Builder
 	leftSB.WriteString(muted.Render("模組包") + "\n\n")
+	// 箭頭 "▶ "(2) + 名稱 + " ●"(2) 必須塞進 leftW，否則綠點會被折到下一行
+	nameW := leftW - 4
 	for i, pkg := range pkgs {
 		active := ""
 		if pkg.Name == m.cfg.ActivePackage {
 			active = lipgloss.NewStyle().Foreground(colorEnabled).Render(" ●")
 		}
-		line := fmt.Sprintf("%-*s%s", leftW-2, truncate(pkg.DisplayName, leftW-4), active)
+		name := truncateWidth(pkg.DisplayName, nameW)
+		line := name + strings.Repeat(" ", nameW-lipgloss.Width(name)) + active
 		if i == m.pkgListIdx && m.pkgSection == 0 {
 			leftSB.WriteString(selectedItemStyle.Render("▶ " + line))
 		} else {

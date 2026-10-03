@@ -11,6 +11,7 @@ import (
 )
 
 type Manifest struct {
+	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Author  string `json:"author"`
@@ -27,6 +28,9 @@ type ModInfo struct {
 	Installed   bool
 	Enabled     bool
 	CanUpdate   bool
+	ModID       string // manifest 的 id 欄位
+	Source      string // SourceModsDir / SourceWorkshop / SourceLegacyDisabled
+	WorkshopID  string
 }
 
 func GetAvailableMods() ([]ModInfo, error) {
@@ -53,8 +57,12 @@ func GetAvailableMods() ([]ModInfo, error) {
 	return mods, nil
 }
 
-func GetInstalledMods(gameDir string) ([]ModInfo, error) {
+func GetInstalledMods(gameDir, steamID string) ([]ModInfo, error) {
 	var mods []ModInfo
+	settings, _ := LoadGameSettings(steamID)
+	enabled := func(mod ModInfo) bool {
+		return settings == nil || settings.ModEnabled(mod.GameID(), mod.Source)
+	}
 
 	modsDir := ModsDir(gameDir)
 	if _, err := os.Stat(modsDir); err == nil {
@@ -69,7 +77,24 @@ func GetInstalledMods(gameDir string) ([]ModInfo, error) {
 			modPath := filepath.Join(modsDir, entry.Name())
 			mod := parseModInfo(modPath, entry.Name())
 			mod.Installed = true
-			mod.Enabled = true
+			mod.Source = SourceModsDir
+			mod.Enabled = enabled(mod)
+			mods = append(mods, mod)
+		}
+	}
+
+	subscribed := SubscribedWorkshopIDs(gameDir)
+	workshopItems, _ := ScanWorkshopItems(gameDir)
+	for _, it := range workshopItems {
+		if !subscribed[it.ID] {
+			continue
+		}
+		for _, mod := range findModRoots(it.Path) {
+			mod.Name = mod.InstallName
+			mod.Installed = true
+			mod.Source = SourceWorkshop
+			mod.WorkshopID = it.ID
+			mod.Enabled = enabled(mod)
 			mods = append(mods, mod)
 		}
 	}
@@ -87,6 +112,7 @@ func GetInstalledMods(gameDir string) ([]ModInfo, error) {
 			modPath := filepath.Join(disabledDir, entry.Name())
 			mod := parseModInfo(modPath, entry.Name())
 			mod.Installed = true
+			mod.Source = SourceLegacyDisabled
 			mod.Enabled = false
 			mods = append(mods, mod)
 		}
@@ -95,22 +121,149 @@ func GetInstalledMods(gameDir string) ([]ModInfo, error) {
 	return mods, nil
 }
 
-func EnableMod(modName, gameDir string) error {
-	src := filepath.Join(DisabledModsDir(gameDir), modName)
-	dst := filepath.Join(ModsDir(gameDir), modName)
-	if err := os.MkdirAll(ModsDir(gameDir), 0755); err != nil {
-		return err
-	}
-	return os.Rename(src, dst)
+type ModState struct {
+	Mod     ModInfo
+	Enabled bool
 }
 
-func DisableMod(modName, gameDir string) error {
-	src := filepath.Join(ModsDir(gameDir), modName)
-	dst := filepath.Join(DisabledModsDir(gameDir), modName)
-	if err := os.MkdirAll(DisabledModsDir(gameDir), 0755); err != nil {
+func SetModStates(gameDir, steamID string, states []ModState) error {
+	if IsGameRunning() {
+		return fmt.Errorf("遊戲執行中，請先關閉遊戲再變更模組")
+	}
+	settings, err := LoadGameSettings(steamID)
+	if err != nil {
 		return err
 	}
-	return os.Rename(src, dst)
+	installed, _ := GetInstalledMods(gameDir, steamID)
+	states = dedupeStates(states, installed)
+
+	anyEnabled := false
+	for _, st := range states {
+		mod := st.Mod
+		if mod.Source == SourceLegacyDisabled {
+			if !st.Enabled {
+				continue
+			}
+			for _, other := range installed {
+				if other.Source != SourceLegacyDisabled && strings.EqualFold(other.GameID(), mod.GameID()) {
+					return fmt.Errorf("%s 與已安裝的 %s 是同一個模組，請先卸載其中一個", mod.Name, other.DisplayName)
+				}
+			}
+			if mod, err = restoreLegacyMod(mod, gameDir); err != nil {
+				return err
+			}
+			installed = append(installed, mod)
+		}
+		settings.SetModEnabled(mod.GameID(), mod.Source, st.Enabled)
+		anyEnabled = anyEnabled || st.Enabled
+	}
+	if anyEnabled {
+		settings.SetModsEnabled(true)
+	}
+	return settings.Save()
+}
+
+func dedupeStates(states []ModState, installed []ModInfo) []ModState {
+	type copyState struct {
+		mod      ModInfo
+		enabled  bool
+		explicit bool
+	}
+	key := func(mod ModInfo) string { return mod.Source + "|" + mod.Path }
+	explicit := map[string]int{}
+	for i, st := range states {
+		explicit[key(st.Mod)] = i
+	}
+
+	groups := map[string][]copyState{}
+	for _, mod := range installed {
+		if mod.Source != SourceModsDir && mod.Source != SourceWorkshop {
+			continue
+		}
+		cs := copyState{mod: mod, enabled: mod.Enabled}
+		if i, ok := explicit[key(mod)]; ok {
+			cs.enabled, cs.explicit = states[i].Enabled, true
+		}
+		id := strings.ToLower(mod.GameID())
+		groups[id] = append(groups[id], cs)
+	}
+
+	for _, copies := range groups {
+		var enabled, chosen []copyState
+		for _, c := range copies {
+			if c.enabled {
+				enabled = append(enabled, c)
+				if c.explicit {
+					chosen = append(chosen, c)
+				}
+			}
+		}
+		if len(enabled) < 2 {
+			continue
+		}
+		keep := enabled[0]
+		if len(chosen) == 1 {
+			keep = chosen[0]
+		} else {
+			for _, c := range enabled {
+				if c.mod.Source == SourceWorkshop {
+					keep = c
+					break
+				}
+			}
+		}
+		for _, c := range enabled {
+			if key(c.mod) == key(keep.mod) {
+				continue
+			}
+			if i, ok := explicit[key(c.mod)]; ok {
+				states[i].Enabled = false
+			} else {
+				explicit[key(c.mod)] = len(states)
+				states = append(states, ModState{c.mod, false})
+			}
+		}
+	}
+	return states
+}
+
+// 回傳在 mods 與工作坊同時存在的模組
+func DuplicateMods(mods []ModInfo) map[string]bool {
+	sources := map[string]map[string]bool{}
+	for _, mod := range mods {
+		if mod.Source != SourceModsDir && mod.Source != SourceWorkshop {
+			continue
+		}
+		id := strings.ToLower(mod.GameID())
+		if sources[id] == nil {
+			sources[id] = map[string]bool{}
+		}
+		sources[id][mod.Source] = true
+	}
+	dups := map[string]bool{}
+	for id, src := range sources {
+		if len(src) > 1 {
+			dups[id] = true
+		}
+	}
+	return dups
+}
+
+func restoreLegacyMod(mod ModInfo, gameDir string) (ModInfo, error) {
+	dst := filepath.Join(ModsDir(gameDir), mod.Name)
+	if _, err := os.Stat(dst); err == nil {
+		return mod, fmt.Errorf("mods 中已有同名資料夾：%s", mod.Name)
+	}
+	if err := os.MkdirAll(ModsDir(gameDir), 0755); err != nil {
+		return mod, err
+	}
+	if err := os.Rename(mod.Path, dst); err != nil {
+		return mod, err
+	}
+	restored := parseModInfo(dst, mod.Name)
+	restored.Installed = true
+	restored.Source = SourceModsDir
+	return restored, nil
 }
 
 func ProcessDropped(path string) (ModInfo, error) {
@@ -242,22 +395,19 @@ func parseModInfo(modPath, dirName string) ModInfo {
 		Version:     "unknown",
 	}
 
-	manifestPath := filepath.Join(modPath, "mod_manifest.json")
-	if data, err := os.ReadFile(manifestPath); err == nil {
-		var manifest Manifest
-		if json.Unmarshal(data, &manifest) == nil {
-			mod.Version = manifest.Version
-			mod.Author = manifest.Author
+	if manifest, ok := readModManifest(modPath); ok {
+		mod.ModID = manifest.ID
+		mod.Version = manifest.Version
+		mod.Author = manifest.Author
 
-			if manifest.Name != "" && manifest.Name != dirName {
-				mod.DisplayName = fmt.Sprintf("%s (%s)", manifest.Name, dirName)
-			} else {
-				mod.DisplayName = dirName
-			}
+		if manifest.Name != "" && manifest.Name != dirName {
+			mod.DisplayName = fmt.Sprintf("%s (%s)", manifest.Name, dirName)
+		} else {
+			mod.DisplayName = dirName
+		}
 
-			if manifest.PckName != "" {
-				mod.InstallName = manifest.PckName
-			}
+		if manifest.PckName != "" {
+			mod.InstallName = manifest.PckName
 		}
 	}
 
@@ -272,6 +422,34 @@ func parseModInfo(modPath, dirName string) ModInfo {
 	}
 
 	return mod
+}
+
+func readModManifest(modPath string) (Manifest, bool) {
+	var m Manifest
+	if data, err := os.ReadFile(filepath.Join(modPath, "mod_manifest.json")); err == nil {
+		if json.Unmarshal(data, &m) == nil {
+			return m, true
+		}
+	}
+	entries, err := os.ReadDir(modPath)
+	if err != nil {
+		return m, false
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(modPath, e.Name()))
+		if err != nil {
+			continue
+		}
+		var cand Manifest
+		if json.Unmarshal(data, &cand) == nil && cand.ID != "" &&
+			strings.EqualFold(cand.ID, strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))) {
+			return cand, true
+		}
+	}
+	return m, false
 }
 
 func findDLLName(modPath string) string {
@@ -319,14 +497,11 @@ func Install(mod ModInfo, gameDir string) error {
 	return nil
 }
 
-func Uninstall(modName, gameDir string) error {
-	modPath := filepath.Join(ModsDir(gameDir), modName)
-	return os.RemoveAll(modPath)
-}
-
-func UninstallDisabled(modName, gameDir string) error {
-	modPath := filepath.Join(DisabledModsDir(gameDir), modName)
-	return os.RemoveAll(modPath)
+func Uninstall(mod ModInfo) error {
+	if mod.Source == SourceWorkshop {
+		return fmt.Errorf("工作坊模組請在 Steam 取消訂閱")
+	}
+	return os.RemoveAll(mod.Path)
 }
 
 func copyFile(src, dst string) error {
