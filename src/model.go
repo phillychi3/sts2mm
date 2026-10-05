@@ -152,6 +152,13 @@ var sidebarItems = []sidebarItem{
 func NewModel() Model {
 	cfg, _ := Load()
 
+	if cfg.GetGameDir() == "" {
+		if gameDir := FindGameDir(); gameDir != "" {
+			cfg.GameDir = gameDir
+			cfg.Save()
+		}
+	}
+
 	if cfg.SteamID == "" {
 		accounts := FindSaveAccounts()
 		if len(accounts) == 1 {
@@ -965,7 +972,7 @@ func (m Model) renderModsList(_, _ int) string {
 	if len(m.modsList) == 0 {
 		gameDir := m.cfg.GetGameDir()
 		if gameDir == "" {
-			return statusErrStyle.Render("請先設定遊戲目錄（進入「設定」按 D）")
+			return statusErrStyle.Render("未偵測到遊戲目錄，請確認 Steam 與遊戲已安裝（進入「設定」按 D 重試）")
 		}
 		return lipgloss.NewStyle().Foreground(colorMuted).Render("沒有已安裝的模組\n\n按 [I] 匯入模組")
 	}
@@ -1061,7 +1068,7 @@ func (m Model) renderSettings(width int) string {
 		sb.WriteString(statusErrStyle.Render("  ✗ 未設定"))
 	}
 	sb.WriteString("\n")
-	sb.WriteString(muted.Render("  [D] 自動偵測"))
+	sb.WriteString(muted.Render("  [D] 重新偵測"))
 	sb.WriteString("\n\n")
 
 	sb.WriteString(lipgloss.NewStyle().Bold(true).Render("Steam 帳號（存檔）"))
@@ -1100,7 +1107,7 @@ func (m Model) renderHelp() string {
 	case workshopView:
 		keys = "[E]匯出清單  [S]從清單同步  [R]重新整理  [Tab/←→]切換面板  [Q]離開"
 	case settingsView:
-		keys = "[D]自動偵測遊戲目錄  [A]切換帳號  [Tab/←→]切換面板  [Q]離開"
+		keys = "[D]重新偵測遊戲目錄  [A]切換帳號  [Tab/←→]切換面板  [Q]離開"
 	}
 	return lipgloss.NewStyle().Foreground(colorMuted).Render("  " + keys)
 }
