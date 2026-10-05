@@ -1,6 +1,7 @@
 package sts2mm
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -236,23 +237,88 @@ func CopyVanillaToModded(steamID string) error {
 	if steamID == "" {
 		return fmt.Errorf("未設定 Steam 帳號")
 	}
-	accountDir := GetAccountSaveDir(steamID)
 	pairs := [][2]string{
 		{"profile1", "modded/profile1"},
 		{"profile2", "modded/profile2"},
 		{"profile3", "modded/profile3"},
 	}
 	for _, pair := range pairs {
-		src := filepath.Join(accountDir, pair[0])
-		dst := filepath.Join(accountDir, filepath.FromSlash(pair[1]))
-		if _, err := os.Stat(src); os.IsNotExist(err) {
+		if err := CopyVanillaProfileToModded(steamID, pair[0], pair[1]); errors.Is(err, errNoVanillaSaves) {
 			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		} else if err != nil {
 			return err
 		}
-		if err := copyDir(src, dst); err != nil {
-			return fmt.Errorf("複製 %s → %s 失敗: %w", pair[0], pair[1], err)
+	}
+	return nil
+}
+
+var errNoVanillaSaves = errors.New("來源槽位沒有可複製的存檔")
+
+// CopyVanillaProfileToModded merges only progress, preferences and run history.
+// Existing current_run.save and other destination files are left untouched.
+func CopyVanillaProfileToModded(steamID, source, target string) error {
+	if steamID == "" {
+		return fmt.Errorf("未設定 Steam 帳號")
+	}
+	validSource, validTarget := false, false
+	for _, profile := range []string{"profile1", "profile2", "profile3"} {
+		validSource = validSource || source == profile
+		validTarget = validTarget || target == "modded/"+profile
+	}
+	if !validSource || !validTarget {
+		return fmt.Errorf("無效的來源或目標槽位: %s → %s", source, target)
+	}
+	src := filepath.Join(GetAccountSaveDir(steamID), source, "saves")
+	dst := filepath.Join(GetAccountSaveDir(steamID), filepath.FromSlash(target), "saves")
+	var files []string
+	for _, name := range []string{"progress.save", "prefs.save"} {
+		info, err := os.Lstat(filepath.Join(src, name))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("讀取來源存檔失敗: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("來源存檔不是一般檔案: %s", name)
+		}
+		files = append(files, name)
+	}
+	history := filepath.Join(src, "history")
+	err := filepath.WalkDir(history, func(path string, entry os.DirEntry, err error) error {
+		if path == history && os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() && filepath.Ext(entry.Name()) == ".run" {
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			files = append(files, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("讀取來源歷史失敗: %w", err)
+	}
+	if len(files) == 0 {
+		return errNoVanillaSaves
+	}
+	for _, rel := range files {
+		path := filepath.Join(src, rel)
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(dst, rel)
+		if err := os.MkdirAll(filepath.Dir(out), 0755); err != nil {
+			return err
+		}
+		if err := copyFilePerm(path, out, info.Mode()); err != nil {
+			return fmt.Errorf("複製 %s → %s 失敗: %w", source, target, err)
 		}
 	}
 	return nil

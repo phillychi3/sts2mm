@@ -20,6 +20,7 @@ const (
 	settingsView
 	importView
 	confirmInheritSaveView
+	copySaveView
 
 	packageImportView
 	packageNewView
@@ -105,6 +106,9 @@ type Model struct {
 	savesSection   int          // 0=profile pane, 1=backup pane
 	savesList      []BackupInfo // backups for currently selected profile
 	saveSlotTimes  []time.Time  // 各巢位最後更新時間，對應 AllSaveSlots
+	copySourceIdx  int
+	copyTargetIdx  int
+	copySection    int // 0=source, 1=target, 2=confirmation
 
 	textInput         textinput.Model
 	pendingImportPath string
@@ -212,6 +216,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.state == confirmInheritSaveView {
 			return m.updateConfirmInheritSave(msg)
+		}
+		if m.state == copySaveView {
+			return m.updateCopySave(msg)
 		}
 		if m.state == packageImportView || m.state == packageNewView {
 			return m.updatePackageTextInput(msg)
@@ -338,6 +345,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "b":
 			if m.state == saveManageView {
 				return m.backupSaves()
+			}
+
+		case "c":
+			if m.state == saveManageView {
+				m.copySourceIdx = m.saveProfileIdx % 3
+				m.copyTargetIdx = m.saveProfileIdx % 3
+				m.copySection = 0
+				m.message = ""
+				m.state = copySaveView
+				return m, nil
 			}
 
 		case "i":
@@ -825,6 +842,9 @@ func (m Model) View() string {
 	if m.state == confirmInheritSaveView {
 		return m.renderConfirmInheritSave(header)
 	}
+	if m.state == copySaveView {
+		return m.renderCopySave(header)
+	}
 	if m.state == packageImportView {
 		return m.renderPackageImportView(header)
 	}
@@ -910,6 +930,7 @@ func (m Model) renderConfirmInheritSave(header string) string {
 				"是否將存檔（profile1/2/3）複製到",
 				"mod 存檔槽（modded/profile1/2/3），",
 				"以便在 mod 模式下繼續原本的進度？",
+				"請先關閉遊戲。",
 				"",
 				lipgloss.NewStyle().Foreground(colorMuted).Render("[Y/Enter] 是，複製存檔  [N/Esc] 否，從頭開始"),
 			),
@@ -1101,7 +1122,7 @@ func (m Model) renderHelp() string {
 	case modsListView:
 		keys = "[I]匯入  [Space]啟用/停用  [A]全部開關  [P]加入模組包  [U]卸載  [Tab/←→]切換面板  [Q]離開"
 	case saveManageView:
-		keys = "[B]備份選中巢位  [Enter]還原備份  [Tab/←→]切換欄位  [Q]離開"
+		keys = "[C]原版→mod 存檔  [B]備份選中巢位  [Enter]還原備份  [Tab/←→]切換欄位  [Q]離開"
 	case packageListView:
 		keys = "[Enter]切換/重套  [X]停用  [N]新建  [P]匯入  [E]導出  [R]移出模組  [D]刪除包  [Tab/←→]切換欄位  [Q]離開"
 	case workshopView:
